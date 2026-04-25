@@ -1,0 +1,13 @@
+# 1. Ignorar absolutamente todo por defecto
+*
+
+# 2. Exceptuar el propio .gitignore
+!.gitignore
+
+# 3. Exceptuar la carpeta 'functions' y TODO su contenido
+!functions/
+!functions/**
+
+# 4. (Opcional) Si dentro de functions hay basura que NO quer√©s
+functions/**/__pycache__/
+functions/**/*.pyc
