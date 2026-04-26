@@ -9,132 +9,83 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as st
 
-class Data(object):
-    """
-    mode=0: 'muchas mediciones de 1 magnitud'
-    mode=1: 'conjunto de mediciones x e y (fit)'
-    """
-   
-    def __init__(self, data, mode=0):
-        self.mode = mode
-        self.data = data
-        
-    # def __add__(self, new_data):
-        
-    
+class Data:
+    def __init__(self, data):
+        self.data = np.array(data)
+        # mode: 0 [univariado], 1 [bivariado (x, y)]
+        self.mode = 0 if len(self.data.shape)==1 else 1
+
     def mean(self):
-        if self.mode:
-            return np.mean(self.data[0]), np.mean(self.data[1])
-        else:
-            return np.mean(self.data)
-    
-    def std(self):
-        if self.mode:
-            return np.std(self.data[0]), np.std(self.data[1])
-        else:
-            return np.std(self.data)
-    
-    def linear_fit(self, stats=False):
-        try:
-            xs = np.linspace(self.data[0][0], self.data[0][-1])
-        except:
-            print("So' un wachin, te falta eje x.")
-            return
-        params, cov = np.polyfit(self.data[0], self.data[1], deg=1, cov=True)
-        val = np.polyval(params, xs)
+        return np.mean(self.data, axis=1) if self.mode else np.mean(self.data)
+
+    def std_mean(self):
+        """Error estándar de la media (Tipo A)"""
+        n = self.data.shape[1] if self.mode else len(self.data)
+        return np.std(self.data, axis=1 if self.mode else 0, ddof=1) / np.sqrt(n)
+
+    def linear_fit(self, values=True, stats=False):
+        if not self.mode or len(self.data) < 2:
+            raise ValueError("So' un wachin, te falta el eje X o datos suficientes.")
+        
+        x, y = self.data
+        params, cov = np.polyfit(x, y, deg=1, cov=True)
+        
+        if values:
+            xs = np.linspace(x[0], x[-1])
+            ys = np.polyval(params, xs)
         
         if stats:
             m, p = params
-            sdv_m = np.sqrt( cov[0][0] )
-            sdv_p = np.sqrt( cov[1][1] )
-            return (m, sdv_m), (p, sdv_p), val
-        
-        return params, val
-    
-    def k_factor(self, sigmas):
-        # factor de cobertura
-        conf = {
-            1: 0.68,
-            2: 0.95,
-            3: 0.997
-        }
-        if self.mode:
-            k = st.t.ppf(conf[sigmas], df = len(self.data[0])-1)
-        else:
-            k = st.t.ppf(conf[sigmas], df = len(self.data)-1)
-        return k
-    
+            sdv_m, sdv_p = np.sqrt(np.diag(cov))
+            return ((m, sdv_m), (p, sdv_p)) if not values else ((m, sdv_m), (p, sdv_p), ys)
+        return params if not values else (params, ys)
 
 class DigitalData(Data):
-    
-    def __init__(self, data, mode=0):
-        super().__init__(data, mode)
-    
-    def ucty_digital(self, acc, rnge, res, lin, temp):
-        """
-        Se asume:
-        - acc: [valor porcentual, valor porcentual]
-        - rnge: rango
-        - res: resolución
-        - lin: [valor porcentual, valor porcentual]
-        - temp: [valor porcentual, valor porcentual, temperatura]
-        """
+    def __init__(self, data, instrument, instr_mode="DC_Voltage", period="1y"):
+        super().__init__(data)
+        self.instrument = instrument # Objeto de la clase HP34401A o similar
+        self.instr_mode = instr_mode
+        self.period = period
+
+    def get_uB(self, value):
+        """Obtiene la incertidumbre Tipo B del instrumento."""
+        return self.instrument.calculate_error(value, self.instr_mode, self.period)
+
+    def fast(self, sigmas=1):
+        """Reporte rápido con propagación completa."""
+        # Factor de cobertura k (t-Student)
+        dof = (self.data.shape[1] - 1 if self.mode else len(self.data)) - 1
+        k = st.t.ppf(1 - (1 - {1:0.68, 2:0.95, 3:0.997}[sigmas])/2, df=dof)
+
+        if not self.mode:
+            # Caso una sola magnitud
+            val_mean = self.mean()
+            uA = self.std_mean()
+            uB = self.get_uB(val_mean)
+            uC = np.sqrt(uA**2 + uB**2)
+            return val_mean, k * uC
         
-        if self.mode:
-            y = self.data
         else:
-            y = self.data.mean()
+            # Caso ajuste lineal (Propagación en la pendiente)
+            M, P = self.linear_fit(values=False, stats=True)
+            m, sm = M # m: pendiente, sm: error del ajuste (Tipo A)
+            p, sp = P
             
-        # if (data := self.data) and len(data.size)==1:
-        #     y = data.mean()
-        # else:
-        #     y = np.array([data[0], data[1]])
+            # Error instrumental medio (Tipo B)
+            x_mean = np.mean(self.data[0])
+            y_mean = np.mean(self.data[1])
+            uB_x = self.get_uB(x_mean)
+            uB_y = self.get_uB(y_mean)
+
+            # Propagación simplificada a la pendiente
+            # sigma_m^2 = (sm_fit)^2 + (uB_slope)^2
+            # Aquí uB_slope se aproxima por la propagación de errores sistemáticos
+            uB_m = m * np.sqrt((uB_y/y_mean)**2 + (uB_x/x_mean)**2)
+            uB_p = p * np.sqrt((uB_y/y_mean)**2 + (uB_x/x_mean)**2)
             
-        ucty_acc = (acc[0]*y + acc[1]*rnge)/np.sqrt(3)
-        ucty_lin = (lin[0]*y + lin[1]*rnge)/np.sqrt(3)
-        ucty_res = (res*rnge/2)/np.sqrt(3)
-        ucty_temp = (temp[0]*y + temp[1]*rnge)*abs(temp[2] - 23)/np.sqrt(3)
-        
-        ucty = np.sqrt(ucty_acc**2 + ucty_res**2 + ucty_temp**2 + ucty_lin**2)
-        return ucty
-    
-    def quick_ucty_mean(self, *args):
-        # acc, rnge, res, lin, temp = *args
-        std_x = self.std()
-        uB_x = self.ucty_digital(*args)
-        ucty_x = np.sqrt(std_x**2 + uB_x**2)
-        return ucty_x
-    
-    def quick_ucty_fit(self, M, P, *args):
-        # acc, rnge, res, lin, temp = *args
-        m, std_m = M
-        p, std_p = P
-        
-        x, y = self.data
-        
-        uB_i, uB_o = self.ucty_digital(*args)
-        
-        uB2_m = np.sum( ((m - y)/(x**2)*uB_i)**2 + (1/x*uB_o)**2 )
-        uB_m = np.sqrt(uB2_m)
-        
-        uB2_p = np.sum( (-p*uB_i)**2 + (1*uB_o)**2 )
-        uB_p = np.sqrt(uB2_p)
-        
-        uC_m = np.sqrt( std_m**2 + uB_m**2 )
-        uC_p = np.sqrt( std_p**2 + uB_p**2 )
-        return uC_m, uC_p
-    
-    def fast(self, *args, sigmas=1):
-        k = self.k_factor(sigmas)
-        
-        if self.mode:
-            M, P, val = self.linear_fit(stats=True)
-            uC_m, uC_p = self.quick_ucty_fit(M, P, *args)
-            return (M[0], k*uC_m), (P[0], k*uC_p), val
-        else:
-            x = self.mean()
-            ucty_x = self.quick_ucty_mean(*args)
-            return x, k*ucty_x
+            uC_m = np.sqrt(sm**2 + uB_m**2)
+            uC_p = np.sqrt(sp**2 + uB_p**2)
+            return (m, k * uC_m), (p, k * uC_p)
 
 def graf_doble(datos, ajuste=[], ejes=['x', ['y1', 'y2']]):
     """
