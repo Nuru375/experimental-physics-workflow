@@ -9,47 +9,132 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as st
 
-def linear_fit(x, y, stats=False):
-    xs = np.linspace(x[0], x[-1])
-    params, cov = np.polyfit(x, y, 1, cov=True)
-    val = np.polyval(params, xs)
-    
-    if stats:
-        m, p = params
-        sdv_m = np.sqrt( cov[0][0] )
-        sdv_p = np.sqrt( cov[1][1] )
-        return (m, sdv_m), (p, sdv_p), val
-    
-    return params, val
-
-def ucty_digital(x, acc, rnge, res, lin, temp):
+class Data(object):
     """
-    Se asume:
-    - x: mejor estimación o np.array de datos
-    - acc: [valor porcentual, valor porcentual]
-    - rnge: rango
-    - res: resolución
-    - lin: [valor porcentual, valor porcentual]
-    - temp: [valor porcentual, valor porcentual, temperatura]
+    mode=0: 'muchas mediciones de 1 magnitud'
+    mode=1: 'conjunto de mediciones x e y (fit)'
     """
+   
+    def __init__(self, data, mode=0):
+        self.mode = mode
+        self.data = data
+        
+    # def __add__(self, new_data):
+        
     
-    ucty_acc = (acc[0]*x + acc[1]*rnge)/np.sqrt(3)
-    ucty_lin = (lin[0]*x + lin[1]*rnge)/np.sqrt(3)
-    ucty_res = (res*rnge/2)/np.sqrt(3)
-    ucty_temp = (temp[0]*x + temp[1]*rnge)*abs(temp[2] - 23)/np.sqrt(3)
+    def mean(self):
+        if self.mode:
+            return np.mean(self.data[0]), np.mean(self.data[1])
+        else:
+            return np.mean(self.data)
     
-    ucty = np.sqrt( ucty_acc**2 + ucty_res**2 + ucty_temp**2 + ucty_lin**2 )
-    return ucty
+    def std(self):
+        if self.mode:
+            return np.std(self.data[0]), np.std(self.data[1])
+        else:
+            return np.std(self.data)
+    
+    def linear_fit(self, stats=False):
+        try:
+            xs = np.linspace(self.data[0][0], self.data[0][-1])
+        except:
+            print("So' un wachin, te falta eje x.")
+            return
+        params, cov = np.polyfit(self.data[0], self.data[1], deg=1, cov=True)
+        val = np.polyval(params, xs)
+        
+        if stats:
+            m, p = params
+            sdv_m = np.sqrt( cov[0][0] )
+            sdv_p = np.sqrt( cov[1][1] )
+            return (m, sdv_m), (p, sdv_p), val
+        
+        return params, val
+    
+    def k_factor(self, sigmas):
+        # factor de cobertura
+        conf = {
+            1: 0.68,
+            2: 0.95,
+            3: 0.997
+        }
+        if self.mode:
+            k = st.t.ppf(conf[sigmas], df = len(self.data[0])-1)
+        else:
+            k = st.t.ppf(conf[sigmas], df = len(self.data)-1)
+        return k
+    
 
-def k_factor(x, sigmas):
-    #factor de cobertura
-    conf = {
-        1: 0.68,
-        2: 0.95,
-        3: 0.997
-    }
-    k = st.t.ppf(conf[sigmas], df = len(x)-1 )
-    return k
+class DigitalData(Data):
+    
+    def __init__(self, data, mode=0):
+        super().__init__(data, mode)
+    
+    def ucty_digital(self, acc, rnge, res, lin, temp):
+        """
+        Se asume:
+        - acc: [valor porcentual, valor porcentual]
+        - rnge: rango
+        - res: resolución
+        - lin: [valor porcentual, valor porcentual]
+        - temp: [valor porcentual, valor porcentual, temperatura]
+        """
+        
+        if self.mode:
+            y = self.data
+        else:
+            y = self.data.mean()
+            
+        # if (data := self.data) and len(data.size)==1:
+        #     y = data.mean()
+        # else:
+        #     y = np.array([data[0], data[1]])
+            
+        ucty_acc = (acc[0]*y + acc[1]*rnge)/np.sqrt(3)
+        ucty_lin = (lin[0]*y + lin[1]*rnge)/np.sqrt(3)
+        ucty_res = (res*rnge/2)/np.sqrt(3)
+        ucty_temp = (temp[0]*y + temp[1]*rnge)*abs(temp[2] - 23)/np.sqrt(3)
+        
+        ucty = np.sqrt(ucty_acc**2 + ucty_res**2 + ucty_temp**2 + ucty_lin**2)
+        return ucty
+    
+    def quick_ucty_mean(self, *args):
+        # acc, rnge, res, lin, temp = *args
+        std_x = self.std()
+        uB_x = self.ucty_digital(*args)
+        ucty_x = np.sqrt(std_x**2 + uB_x**2)
+        return ucty_x
+    
+    def quick_ucty_fit(self, M, P, *args):
+        # acc, rnge, res, lin, temp = *args
+        m, std_m = M
+        p, std_p = P
+        
+        x, y = self.data
+        
+        uB_i, uB_o = self.ucty_digital(*args)
+        
+        uB2_m = np.sum( ((m - y)/(x**2)*uB_i)**2 + (1/x*uB_o)**2 )
+        uB_m = np.sqrt(uB2_m)
+        
+        uB2_p = np.sum( (-p*uB_i)**2 + (1*uB_o)**2 )
+        uB_p = np.sqrt(uB2_p)
+        
+        uC_m = np.sqrt( std_m**2 + uB_m**2 )
+        uC_p = np.sqrt( std_p**2 + uB_p**2 )
+        return uC_m, uC_p
+    
+    def fast(self, *args, sigmas=1):
+        k = self.k_factor(sigmas)
+        
+        if self.mode:
+            M, P, val = self.linear_fit(stats=True)
+            uC_m, uC_p = self.quick_ucty_fit(M, P, *args)
+            return (M[0], k*uC_m), (P[0], k*uC_p), val
+        else:
+            x = self.mean()
+            ucty_x = self.quick_ucty_mean(*args)
+            return x, k*ucty_x
 
 def graf_doble(datos, ajuste=[], ejes=['x', ['y1', 'y2']]):
     """
