@@ -54,8 +54,13 @@ class DigitalData(Data):
     def fast(self, sigmas=1):
         """Reporte rápido con propagación completa."""
         # Factor de cobertura k (t-Student)
-        dof = (self.data.shape[1] - 1 if self.mode else len(self.data)) - 1
-        k = st.t.ppf(1 - (1 - {1:0.68, 2:0.95, 3:0.997}[sigmas])/2, df=dof)
+        conf = {
+            1: 0.68,
+            2: 0.95,
+            3: 0.997
+        }
+        dof = (self.data.shape[1] if self.mode else len(self.data)) - 1
+        k = st.t.ppf(1 - (1 - conf[sigmas])/2, df=dof)
 
         if not self.mode:
             # Caso una sola magnitud
